@@ -146,9 +146,11 @@ module.exports = function(RED) {
 
   RED.nodes.registerType("mongodb3", function MongoConfigNode(n) {
     RED.nodes.createNode(this, n);
-    this.uri = '' + n.uri;
-    if (this.credentials.user || this.credentials.password) {
-      this.uri = this.uri.replace(/^mongodb:\/\//, 'mongodb://' + encodeURIComponent(this.credentials.user) + ':' + encodeURIComponent(this.credentials.password) + '@');
+    this.uri = '' + (n.uri || (n.defaultCredentials ? n.process.env.DEFAULT_MONGO_URI : ''));
+    const user = this.credentials.user || (n.defaultCredentials ? process.env.DEFAULT_MONGO_USER : '');
+    const password = this.credentials.password || (n.defaultCredentials ? process.env.DEFAULT_MONGO_PASSWORD : '');
+    if (user || password) {
+      this.uri = this.uri.replace(/^mongodb:\/\//, 'mongodb://' + encodeURIComponent(user) + ':' + encodeURIComponent(password) + '@');
     }
     this.name = n.name;
     this.parallelism = n.parallelism * 1;
@@ -164,7 +166,7 @@ module.exports = function(RED) {
     if(n.sslCheckViaCN) {
       // if configured use custom server identity check that checks for server identity
       // by checking if servername == CN
-      this.options.checkServerIdentity= checkServerIdentity;
+      this.options.checkServerIdentity = checkServerIdentity;
     }
     this.deploymentId = (1 + Math.random() * 0xffffffff).toString(16).replace('.', '');
   }, {
