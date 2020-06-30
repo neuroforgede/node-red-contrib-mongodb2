@@ -248,7 +248,7 @@ module.exports = function(RED) {
         };
       }
     }
-    if (!this.config || !this.config.uri) {
+    if (!this.config || !(this.config.uri || this.config.defaultCredentials)) {
       this.error("missing mongodb3 configuration");
       return;
     }
