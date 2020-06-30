@@ -146,7 +146,7 @@ module.exports = function(RED) {
 
   RED.nodes.registerType("mongodb3", function MongoConfigNode(n) {
     RED.nodes.createNode(this, n);
-    this.uri = '' + (n.uri || (n.defaultCredentials ? n.process.env.DEFAULT_MONGO_URI : ''));
+    this.uri = '' + (n.uri || (n.defaultCredentials ? process.env.DEFAULT_MONGO_URI : ''));
     const user = this.credentials.user || (n.defaultCredentials ? process.env.DEFAULT_MONGO_USER : '');
     const password = this.credentials.password || (n.defaultCredentials ? process.env.DEFAULT_MONGO_PASSWORD : '');
     if (user || password) {
