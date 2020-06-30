@@ -163,17 +163,17 @@ module.exports = function(RED) {
     } else {
       this.options = {};
     }
+    if(n.sslCheckViaCN) {
+      // if configured use custom server identity check that checks for server identity
+      // by checking if servername == CN
+      this.options.checkServerIdentity = checkServerIdentity;
+    }
     if(process.env.OVERRIDE_MONGO_OPTIONS && process.env.OVERRIDE_MONGO_OPTIONS.length > 0) {
       try {
         this.options = JSON.parse(process.env.OVERRIDE_MONGO_OPTIONS);
       } catch (err) {
         this.error("Failed to parse OVERRIDE_MONGO_OPTIONS: " + err);
       }
-    }
-    if(n.sslCheckViaCN) {
-      // if configured use custom server identity check that checks for server identity
-      // by checking if servername == CN
-      this.options.checkServerIdentity = checkServerIdentity;
     }
     this.deploymentId = (1 + Math.random() * 0xffffffff).toString(16).replace('.', '');
   }, {
