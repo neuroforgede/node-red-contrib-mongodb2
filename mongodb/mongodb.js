@@ -199,6 +199,9 @@ module.exports = function (RED) {
 
     function getClient(config) {
         let poolCell = mongoPool['#' + config.deploymentId];
+        if(!config.uri) {
+            return Promise.reject();
+        }
         if (!poolCell) {
             mongoPool['#' + config.deploymentId] = poolCell = {
                 "instances": 0,
