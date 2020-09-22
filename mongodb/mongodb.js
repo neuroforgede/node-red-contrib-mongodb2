@@ -446,7 +446,7 @@ module.exports = function (RED) {
         }).then((err) => {
             // Failed to create db client
             sendError(node, {}, err);
-        });
+        }).done();
         const profiling = {
             "requests": 0,
             "success": 0,
