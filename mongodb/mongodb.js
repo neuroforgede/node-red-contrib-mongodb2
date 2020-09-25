@@ -446,7 +446,7 @@ module.exports = function (RED) {
                 }
                 client.parallelOps -= 1;
             }
-        }).then((err) => {
+        }).catch((err) => {
             // Failed to create db client
             sendError(node, {}, err);
         });
