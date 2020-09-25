@@ -40,10 +40,15 @@ module.exports = function (RED) {
     }
 
     function sendError(node, msg, error) {
-        node.error(error, msg);
-        msg = RED.util.cloneMessage(msg);
-        msg.error = error;
-        node.send([null, msg]);
+        const err = error || 'unknown error';
+        if(msg) {
+            node.error(err, msg);
+            msg = RED.util.cloneMessage(msg);
+            msg.error = err;
+            node.send([null, msg]);
+        } else {
+            node.error(err);
+        }
     }
 
     let services = [];
@@ -441,14 +446,14 @@ module.exports = function (RED) {
                 }
                 // The queue is empty. The number of parallel ops has reduced.
                 if (client.parallelOps <= 0) {
-                    sendError(node, {}, "Something went wrong with node-red-contrib-mongodb3 parallel-ops count");
+                    sendError(node, undefined, "Something went wrong with node-red-contrib-mongodb3 parallel-ops count");
                     return
                 }
                 client.parallelOps -= 1;
             }
         }).catch((err) => {
             // Failed to create db client
-            sendError(node, {}, err);
+            sendError(node, undefined, err);
         });
         const profiling = {
             "requests": 0,
