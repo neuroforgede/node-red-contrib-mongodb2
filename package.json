@@ -8,11 +8,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ozomer/node-red-contrib-mongodb2"
+    "url": "https://github.com/neuroforgede/node-red-contrib-mongodb3"
   },
   "author": {
-    "name": "Oren Zomer",
-    "email": "oren@awearsolutions.com"
+    "name": "NeuroForge GmbH & Co. KG",
+    "email": "kontakt@neuroforge.de"
   },
   "license": "Apache-2.0",
   "keywords": [
