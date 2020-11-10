@@ -274,7 +274,13 @@ module.exports = function (RED) {
 
                 closeConn(conn) {
                     if(conn) {
-                        return conn.close().catch(function (err) {
+                        return conn.then((connObj) => {
+                            if(connObj) {
+                                return connObj.close().catch(function (err) {
+                                    node.error("Error while closing client: " + err);
+                                });
+                            }
+                        }).catch(function (err) {
                             node.error("Error while closing client: " + err);
                         });
                     }
