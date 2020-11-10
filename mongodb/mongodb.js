@@ -267,6 +267,7 @@ module.exports = function (RED) {
                             }));
                         } catch(err) {
                             handleConnError(err);
+                            throw err;
                         }
                     });
                 }
