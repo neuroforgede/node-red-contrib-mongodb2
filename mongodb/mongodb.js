@@ -42,14 +42,13 @@ module.exports = function (RED) {
     function sendError(node, msg, error) {
         const err = error || 'unknown error';
         if(error && error instanceof mongodb.MongoNetworkError) {
+            node.warn('connection to mongodb died, restarting...');
             // mark client as dead
-            getClient().then((client) => {
+            getClient(node).then((client) => {
                 client.closeInternalConnections()
             }).catch(() => {
                 // ignore
             })
-            node.resetInput();
-            node.warn('client connection dead, need to restart')
         }
         if(msg) {
             node.error(err, msg);
@@ -309,14 +308,10 @@ module.exports = function (RED) {
         }
         const node = this;
 
-        node.resetInput = () => {
-            node.removeAllListeners('input');
-            node.on('input', function (msg) {
-                sendError(node, msg, "no connection to a database");
-            });
-        };
-        // by default register the error message input
-        node.resetInput();
+        // by default add error listener
+        node.on('input', function (msg) {
+            sendError(node, msg, "no connection to a database");
+        });
 
         getClient(node.config).then(function (client) {
             let nodeOperation;
@@ -348,54 +343,54 @@ module.exports = function (RED) {
             });
 
             async function handleMessage(msg) {
-                let operation = nodeOperation;
-                if (!operation && msg.operation) {
-                    operation = operations[msg.operation];
-                }
-                if (!operation) {
-                    sendError(node, msg, "No operation defined");
-                    return messageHandlingCompleted();
-                }
-                let collection; // stays undefined in the case of "db" operation.
-                if (
-                    operation != operations.db &&
-                    operation != operations['db.listCollections.toArray'] &&
-                    operation != operations['db.listCollections.forEach']
-                ) {
-                    let nodeCollection;
-                    if (node.collection) {
-                        nodeCollection = (await client.db()).collection(node.collection);
+                try {
+                    let operation = nodeOperation;
+                    if (!operation && msg.operation) {
+                        operation = operations[msg.operation];
                     }
-                    collection = nodeCollection;
-                    if (!collection && msg.collection) {
-                        collection = (await client.db()).collection(msg.collection);
-                    }
-                    if (!collection) {
-                        sendError(node, msg, "No collection defined");
+                    if (!operation) {
+                        sendError(node, msg, "No operation defined");
                         return messageHandlingCompleted();
                     }
-                }
+                    let collection; // stays undefined in the case of "db" operation.
+                    if (
+                        operation != operations.db &&
+                        operation != operations['db.listCollections.toArray'] &&
+                        operation != operations['db.listCollections.forEach']
+                    ) {
+                        let nodeCollection;
+                        if (node.collection) {
+                            nodeCollection = (await client.db()).collection(node.collection);
+                        }
+                        collection = nodeCollection;
+                        if (!collection && msg.collection) {
+                            collection = (await client.db()).collection(msg.collection);
+                        }
+                        if (!collection) {
+                            sendError(node, msg, "No collection defined");
+                            return messageHandlingCompleted();
+                        }
+                    }
 
-                delete msg.collection;
-                delete msg.operation;
-                let args = msg.payload;
-                if (!Array.isArray(args)) {
-                    args = [args];
-                }
-                if (args.length === 0) {
-                    // All operations can accept one argument (some can accept more).
-                    // Some operations don't expect a single callback argument.
-                    args.push(undefined);
-                }
-                if ((operation.length > 0) && (args.length > operation.length - 1)) {
-                    // The operation was defined with arguments, thus it may not
-                    // assume that the last argument is the callback.
-                    // We must not pass too many arguments to the operation.
-                    args = args.slice(0, operation.length - 1);
-                }
-                profiling.requests += 1;
-                debounceProfilingStatus();
-                try {
+                    delete msg.collection;
+                    delete msg.operation;
+                    let args = msg.payload;
+                    if (!Array.isArray(args)) {
+                        args = [args];
+                    }
+                    if (args.length === 0) {
+                        // All operations can accept one argument (some can accept more).
+                        // Some operations don't expect a single callback argument.
+                        args.push(undefined);
+                    }
+                    if ((operation.length > 0) && (args.length > operation.length - 1)) {
+                        // The operation was defined with arguments, thus it may not
+                        // assume that the last argument is the callback.
+                        // We must not pass too many arguments to the operation.
+                        args = args.slice(0, operation.length - 1);
+                    }
+                    profiling.requests += 1;
+                    debounceProfilingStatus();
                     operation.apply(collection || (await client.db()), args.concat(function (err, response) {
                         if (err && (forEachIteration != err) && (forEachEnd != err)) {
                             profiling.error += 1;
