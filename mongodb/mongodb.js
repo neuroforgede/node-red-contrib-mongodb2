@@ -225,11 +225,10 @@ module.exports = function (RED) {
                     this.queue = [];
                     this.parallelOps = 0;
                     this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
-                    
                 }
 
                 clearConnection() {
-                    // TODO: stop old connection
+                    // TODO: cleanup old connection?
                     this.connection = null;
                 }
 
