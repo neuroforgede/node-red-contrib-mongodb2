@@ -251,7 +251,7 @@ module.exports = function (RED) {
                             if(err) {
                                 if(error && error instanceof mongodb.MongoNetworkError) {
                                     this.clearConnection(conn);
-                                    await this.closeConn(conn);
+                                    this.closeConn(conn);
                                 }
                             }
                         };
