@@ -246,8 +246,8 @@ module.exports = function (RED) {
                 }
 
                 db() {
-                    return this.client().then((client) => {
-                        return client.db(dbName);
+                    return this.client().then((cl) => {
+                        return cl.db(this.dbName);
                     })
                 }
 
@@ -265,7 +265,7 @@ module.exports = function (RED) {
             };
             poolCell = new PoolCell(() => {
                 return mongodb.MongoClient.connect(config.uri, config.options || {});
-            });
+            }, config.uri);
             mongoPool['#' + config.deploymentId] = poolCell;
         }
         poolCell.instances++;
@@ -323,7 +323,8 @@ module.exports = function (RED) {
             if (node.operation) {
                 nodeOperation = operations[node.operation];
             }
-            node.resetInput();
+            // remove default listener
+            node.removeAllListeners('input');
             node.on('input', function (msg) {
                 if (node.config.parallelism && (node.config.parallelism > 0) && (client.parallelOps >= node.config.parallelism)) {
                     // msg cannot be handled right now - push to queue.
