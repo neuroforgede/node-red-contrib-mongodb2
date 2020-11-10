@@ -41,6 +41,10 @@ module.exports = function (RED) {
 
     function sendError(node, msg, error) {
         const err = error || 'unknown error';
+        if(error && error instanceof mongodb.MongoNetworkError) {
+            // mark client as dead
+            node.warn('client connection dead, need to restart')
+        }
         if(msg) {
             node.error(err, msg);
             msg = RED.util.cloneMessage(msg);
@@ -222,7 +226,6 @@ module.exports = function (RED) {
                     };
                 })
             };
-            // TODO: watchdog that checks the connection and recreates it if it is dead
         }
         poolCell.instances++;
         return poolCell.promise;
@@ -271,14 +274,14 @@ module.exports = function (RED) {
         }
         const node = this;
 
-        const registerErrorMessage = () => {
+        node.resetInput = () => {
             node.removeAllListeners('input');
             node.on('input', function (msg) {
                 sendError(node, msg, "no connection to a database");
             });
-        }
+        };
         // by default register the error message input
-        registerErrorMessage();
+        node.resetInput();
 
         const tryConnect = () => {
             return getClient(node.config).then(function (client) {
@@ -290,7 +293,7 @@ module.exports = function (RED) {
                 if (node.operation) {
                     nodeOperation = operations[node.operation];
                 }
-                node.removeAllListeners('input');
+                node.resetInput();
                 node.on('input', function (msg) {
                     if (node.config.parallelism && (node.config.parallelism > 0) && (client.parallelOps >= node.config.parallelism)) {
                         // msg cannot be handled right now - push to queue.
