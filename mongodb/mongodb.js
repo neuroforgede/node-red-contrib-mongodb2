@@ -247,8 +247,8 @@ module.exports = function (RED) {
                     return Promise.resolve().then(async () => {
                         // keep track of which client we are using, and close it later if there are any errors
                         const conn = await this.client();
-                        const handleConnError = () => {
-                            if(err) {
+                        const handleConnError = (error) => {
+                            if(error) {
                                 if(error && error instanceof mongodb.MongoNetworkError) {
                                     this.clearConnection(conn);
                                     this.closeConn(conn);
