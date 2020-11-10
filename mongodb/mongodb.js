@@ -470,7 +470,7 @@ module.exports = function (RED) {
                         debounceProfilingStatus();
                         messageHandlingCompleted();
                     }
-                }));
+                });
             }
             function messageHandlingCompleted() {
                 setImmediate(handlePendingMessageOnDemand);
