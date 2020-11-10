@@ -247,16 +247,13 @@ module.exports = function (RED) {
                     return Promise.resolve().then(async () => {
                         // keep track of which client we are using, and close it later if there are any errors
                         const conn = await this.client();
-                        const handleError = () => {
+                        const handleConnError = () => {
                             if(err) {
                                 if(error && error instanceof mongodb.MongoNetworkError) {
-                                    node.warn('connection to mongodb died, restarting...');
                                     this.clearConnection(conn);
                                     await this.closeConn(conn);
-                                    return true;
                                 }
                             }
-                            return false;
                         };
                         try {
                             let applyOn = await this.db(client);
@@ -265,13 +262,11 @@ module.exports = function (RED) {
                             }
                             operation.apply(applyOn, args.concat((err, response) => {
                                 // don't throw, normal code has to handle it still
-                                handleError(err);
+                                handleConnError(err);
                                 callback(err, response);
                             }));
                         } catch(err) {
-                            if(handleError(err)) {
-                                throw err;
-                            }
+                            handleConnError(err);
                         }
                     });
                 }
@@ -465,11 +460,17 @@ module.exports = function (RED) {
                         }
                     }
                     if (forEachIteration != err) {
+                        // success, no error
                         // clear status
                         profiling.success += 1;
                         debounceProfilingStatus();
                         messageHandlingCompleted();
                     }
+                }).catch(err => {
+                    profiling.error += 1;
+                    debounceProfilingStatus();
+                    sendError(node, msg, err);
+                    messageHandlingCompleted();
                 });
             }
             function messageHandlingCompleted() {
