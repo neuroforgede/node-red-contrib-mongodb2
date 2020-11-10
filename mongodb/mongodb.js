@@ -44,11 +44,9 @@ module.exports = function (RED) {
         if(error && error instanceof mongodb.MongoNetworkError) {
             node.warn('connection to mongodb died, restarting...');
             // mark client as dead
-            getClient(node).then((client) => {
+            if(node.client) {
                 client.closeInternalConnections()
-            }).catch(() => {
-                // ignore
-            })
+            }
         }
         if(msg) {
             node.error(err, msg);
@@ -250,6 +248,7 @@ module.exports = function (RED) {
                 }
 
                 closeInternalConnections() {
+                    // TODO: implement mechanism that doesnt kill itself during restart
                     if(this.connection) {
                         const conn = this.connection;
                         this.connection = null;
@@ -314,6 +313,7 @@ module.exports = function (RED) {
 
         getClient(node.config).then(function (client) {
             let nodeOperation;
+            node.client = client;
             if (node.operation) {
                 nodeOperation = operations[node.operation];
             }
