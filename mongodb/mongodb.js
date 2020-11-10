@@ -41,13 +41,6 @@ module.exports = function (RED) {
 
     function sendError(node, msg, error) {
         const err = error || 'unknown error';
-        if(error && error instanceof mongodb.MongoNetworkError) {
-            node.warn('connection to mongodb died, restarting...');
-            // mark client as dead
-            if(node.client) {
-                client.closeInternalConnections()
-            }
-        }
         if(msg) {
             node.error(err, msg);
             msg = RED.util.cloneMessage(msg);
@@ -225,9 +218,12 @@ module.exports = function (RED) {
                     this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
                 }
 
-                clearConnection() {
-                    // TODO: cleanup old connection?
-                    this.connection = null;
+                clearConnection(connection) {
+                    if(this.connection == connection) {
+                        // only cleanup if the passed in object is the same we currently use
+                        // to prevent old connections killing new ones immediately
+                        this.connection = null;
+                    }
                 }
 
                 _access_connection() {
@@ -241,10 +237,51 @@ module.exports = function (RED) {
                     return this._access_connection();
                 }
 
-                db() {
-                    return this.client().then((cl) => {
+                db(client) {
+                    return client.then((cl) => {
                         return cl.db(this.dbName);
                     })
+                }
+                
+                runOp(coll, operation, args, callback) {
+                    return Promise.resolve().then(async () => {
+                        // keep track of which client we are using, and close it later if there are any errors
+                        const conn = await this.client();
+                        const handleError = () => {
+                            if(err) {
+                                if(error && error instanceof mongodb.MongoNetworkError) {
+                                    node.warn('connection to mongodb died, restarting...');
+                                    this.clearConnection(conn);
+                                    await this.closeConn(conn);
+                                    return true;
+                                }
+                            }
+                            return false;
+                        };
+                        try {
+                            let applyOn = await this.db(client);
+                            if(coll) {
+                                applyOn = applyOn.collection(coll);
+                            }
+                            operation.apply(applyOn, args.concat((err, response) => {
+                                // don't throw, normal code has to handle it still
+                                handleError(err);
+                                callback(err, response);
+                            }));
+                        } catch(err) {
+                            if(handleError(err)) {
+                                throw err;
+                            }
+                        }
+                    });
+                }
+
+                closeConn(conn) {
+                    if(conn) {
+                        return conn.close().catch(function (err) {
+                            node.error("Error while closing client: " + err);
+                        });
+                    }
                 }
 
                 closeInternalConnections() {
@@ -252,9 +289,7 @@ module.exports = function (RED) {
                     if(this.connection) {
                         const conn = this.connection;
                         this.connection = null;
-                        return conn.close().catch(function (err) {
-                            node.error("Error while closing client: " + err);
-                        });
+                        return this.closeConn(conn);
                     }
                     return Promise.resolve();
                 }
@@ -342,114 +377,100 @@ module.exports = function (RED) {
             });
 
             async function handleMessage(msg) {
-                try {
-                    let operation = nodeOperation;
-                    if (!operation && msg.operation) {
-                        operation = operations[msg.operation];
-                    }
-                    if (!operation) {
-                        sendError(node, msg, "No operation defined");
-                        return messageHandlingCompleted();
-                    }
-                    let collection; // stays undefined in the case of "db" operation.
-                    if (
-                        operation != operations.db &&
-                        operation != operations['db.listCollections.toArray'] &&
-                        operation != operations['db.listCollections.forEach']
-                    ) {
-                        let nodeCollection;
-                        if (node.collection) {
-                            nodeCollection = (await client.db()).collection(node.collection);
-                        }
-                        collection = nodeCollection;
-                        if (!collection && msg.collection) {
-                            collection = (await client.db()).collection(msg.collection);
-                        }
-                        if (!collection) {
-                            sendError(node, msg, "No collection defined");
-                            return messageHandlingCompleted();
-                        }
-                    }
-
-                    delete msg.collection;
-                    delete msg.operation;
-                    let args = msg.payload;
-                    if (!Array.isArray(args)) {
-                        args = [args];
-                    }
-                    if (args.length === 0) {
-                        // All operations can accept one argument (some can accept more).
-                        // Some operations don't expect a single callback argument.
-                        args.push(undefined);
-                    }
-                    if ((operation.length > 0) && (args.length > operation.length - 1)) {
-                        // The operation was defined with arguments, thus it may not
-                        // assume that the last argument is the callback.
-                        // We must not pass too many arguments to the operation.
-                        args = args.slice(0, operation.length - 1);
-                    }
-                    profiling.requests += 1;
-                    debounceProfilingStatus();
-                    operation.apply(collection || (await client.db()), args.concat(function (err, response) {
-                        if (err && (forEachIteration != err) && (forEachEnd != err)) {
-                            profiling.error += 1;
-                            debounceProfilingStatus();
-                            sendError(node, msg, err);
-                            return messageHandlingCompleted();
-                        }
-                        if (forEachEnd != err) {
-                            if (!!response) {
-                                // Some operations return a Connection object with the result.
-                                // Passing this large connection object might be heavy - it will
-                                // be cloned over and over by Node-RED, and there is no reason
-                                // the typical user will need it.
-                                // The mongodb package does not export the Connection prototype-function.
-                                // Instead of loading the Connection prototype-function from the
-                                // internal libs (which might change their path), I use the fact
-                                // that it inherits EventEmitter.
-                                if (response.connection instanceof EventEmitter) {
-                                    delete response.connection;
-                                }
-                                if (response.result && response.result.connection instanceof EventEmitter) {
-                                    delete response.result.connection;
-                                }
-                            }
-                            
-                            if(!Array.isArray(response)) {
-                                // `response` is an instance of CommandResult, and does not seem to have the standard Object methods, 
-                                // which means that some props are not correctly being forwarded to msg.payload (eg "ops" ouputted from `insertOne`)
-                                // cloning the object fixes that.							
-                                response = Object.assign({}, response);
-                                // response.message includes info about the DB op, but is large and never used (like the connection)
-                                delete response.message;
-                            }
-
-                            // send msg (when err == forEachEnd, this is just a forEach completion).
-                            if (forEachIteration == err) {
-                                // Clone, so we can send the same message again with a different payload
-                                // in each iteration.
-                                const messageToSend = RED.util.cloneMessage(msg);
-                                messageToSend.payload = response;
-                                sendMsg(node, messageToSend);
-                            } else {
-                                // No need to clone - the same message will not be sent again.
-                                msg.payload = response;
-                                sendMsg(node, msg);
-                            }
-                        }
-                        if (forEachIteration != err) {
-                            // clear status
-                            profiling.success += 1;
-                            debounceProfilingStatus();
-                            messageHandlingCompleted();
-                        }
-                    }));
-                } catch (err) {
-                    profiling.error += 1;
-                    debounceProfilingStatus();
-                    sendError(node, msg, err);
+                let operation = nodeOperation;
+                if (!operation && msg.operation) {
+                    operation = operations[msg.operation];
+                }
+                if (!operation) {
+                    sendError(node, msg, "No operation defined");
                     return messageHandlingCompleted();
                 }
+                let collectionToUse;
+                if (
+                    operation != operations.db &&
+                    operation != operations['db.listCollections.toArray'] &&
+                    operation != operations['db.listCollections.forEach']
+                ) {
+                    collectionToUse = node.collection || msg.collection;
+                    if (!collectionToUse) {
+                        sendError(node, msg, "No collection defined");
+                        return messageHandlingCompleted();
+                    }
+                }
+
+                delete msg.collection;
+                delete msg.operation;
+                let args = msg.payload;
+                if (!Array.isArray(args)) {
+                    args = [args];
+                }
+                if (args.length === 0) {
+                    // All operations can accept one argument (some can accept more).
+                    // Some operations don't expect a single callback argument.
+                    args.push(undefined);
+                }
+                if ((operation.length > 0) && (args.length > operation.length - 1)) {
+                    // The operation was defined with arguments, thus it may not
+                    // assume that the last argument is the callback.
+                    // We must not pass too many arguments to the operation.
+                    args = args.slice(0, operation.length - 1);
+                }
+                profiling.requests += 1;
+                debounceProfilingStatus();
+                client.runOp(collectionToUse, operation, args, function (err, response) {
+                    if (err && (forEachIteration != err) && (forEachEnd != err)) {
+                        profiling.error += 1;
+                        debounceProfilingStatus();
+                        sendError(node, msg, err);
+                        return messageHandlingCompleted();
+                    }
+                    if (forEachEnd != err) {
+                        if (!!response) {
+                            // Some operations return a Connection object with the result.
+                            // Passing this large connection object might be heavy - it will
+                            // be cloned over and over by Node-RED, and there is no reason
+                            // the typical user will need it.
+                            // The mongodb package does not export the Connection prototype-function.
+                            // Instead of loading the Connection prototype-function from the
+                            // internal libs (which might change their path), I use the fact
+                            // that it inherits EventEmitter.
+                            if (response.connection instanceof EventEmitter) {
+                                delete response.connection;
+                            }
+                            if (response.result && response.result.connection instanceof EventEmitter) {
+                                delete response.result.connection;
+                            }
+                        }
+                        
+                        if(!Array.isArray(response)) {
+                            // `response` is an instance of CommandResult, and does not seem to have the standard Object methods, 
+                            // which means that some props are not correctly being forwarded to msg.payload (eg "ops" ouputted from `insertOne`)
+                            // cloning the object fixes that.							
+                            response = Object.assign({}, response);
+                            // response.message includes info about the DB op, but is large and never used (like the connection)
+                            delete response.message;
+                        }
+
+                        // send msg (when err == forEachEnd, this is just a forEach completion).
+                        if (forEachIteration == err) {
+                            // Clone, so we can send the same message again with a different payload
+                            // in each iteration.
+                            const messageToSend = RED.util.cloneMessage(msg);
+                            messageToSend.payload = response;
+                            sendMsg(node, messageToSend);
+                        } else {
+                            // No need to clone - the same message will not be sent again.
+                            msg.payload = response;
+                            sendMsg(node, msg);
+                        }
+                    }
+                    if (forEachIteration != err) {
+                        // clear status
+                        profiling.success += 1;
+                        debounceProfilingStatus();
+                        messageHandlingCompleted();
+                    }
+                }));
             }
             function messageHandlingCompleted() {
                 setImmediate(handlePendingMessageOnDemand);
