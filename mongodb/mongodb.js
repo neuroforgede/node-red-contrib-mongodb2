@@ -246,7 +246,7 @@ module.exports = function (RED) {
                 runOp(coll, operation, args, callback) {
                     return Promise.resolve().then(async () => {
                         // keep track of which client we are using, and close it later if there are any errors
-                        const conn = await this.client();
+                        const conn = this.client();
                         const handleConnError = (error) => {
                             if(error) {
                                 if(error && error instanceof mongodb.MongoNetworkError) {
@@ -256,7 +256,7 @@ module.exports = function (RED) {
                             }
                         };
                         try {
-                            let applyOn = await this.db(client);
+                            let applyOn = await this.db(conn);
                             if(coll) {
                                 applyOn = applyOn.collection(coll);
                             }
