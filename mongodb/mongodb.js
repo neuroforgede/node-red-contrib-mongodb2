@@ -222,6 +222,7 @@ module.exports = function (RED) {
                     };
                 })
             };
+            // TODO: watchdog that checks the connection and recreates it if it is dead
         }
         poolCell.instances++;
         return poolCell.promise;
@@ -250,6 +251,7 @@ module.exports = function (RED) {
         this.configNode = n.configNode;
         this.collection = n.collection;
         this.operation = n.operation;
+        this._closed = false;
         if (n.service == "_ext_") {
             // Refer to the config node's id, uri, options, parallelism and warn function.
             this.config = RED.nodes.getNode(this.configNode);
@@ -471,7 +473,9 @@ module.exports = function (RED) {
                 // Failed to create db client
                 sendError(node, undefined, err);
                 setTimeout(() => {
-                    tryConnect();
+                    if(!node._closed) {
+                        tryConnect();
+                    }
                 }, 10000);
             });
         };
@@ -503,6 +507,7 @@ module.exports = function (RED) {
             }, 1000);
         }
         node.on('close', function () {
+            node._closed = true;
             if (node.config) {
                 closeClient(node.config);
             }
