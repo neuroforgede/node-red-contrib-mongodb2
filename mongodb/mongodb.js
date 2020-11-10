@@ -250,6 +250,7 @@ module.exports = function (RED) {
                         const handleConnError = (error) => {
                             if(error) {
                                 if(error && (error instanceof mongodb.MongoNetworkError || error instanceof mongodb.MongoTimeoutError)) {
+                                    console.error('mongodbjs: mongodb connection error, restarting connection', error)
                                     this.clearConnection(conn);
                                     this.closeConn(conn);
                                 }
