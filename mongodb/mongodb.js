@@ -43,6 +43,7 @@ module.exports = function (RED) {
         const err = error || 'unknown error';
         if(error && error instanceof mongodb.MongoNetworkError) {
             // mark client as dead
+            node.resetInput();
             node.warn('client connection dead, need to restart')
         }
         if(msg) {
@@ -212,23 +213,51 @@ module.exports = function (RED) {
             return Promise.reject();
         }
         if (!poolCell) {
-            mongoPool['#' + config.deploymentId] = poolCell = {
-                "instances": 0,
-                // es6-promise. A client will be called only once.
-                "promise": mongodb.MongoClient.connect(config.uri, config.options || {}).then(function (client) {
-                    const dbName = decodeURIComponent((config.uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
-                    const db = client.db(dbName);
-                    return {
-                        "client": client,
-                        "db": db,
-                        "queue": [],
-                        "parallelOps": 0 // current number of operations
-                    };
-                })
-            };
+            class PoolCell {
+                constructor(connector) {
+                    this.instances = 0;
+                    this._connector = connector;
+                    this.connection = null;
+                    this.queue = [];
+                    this.parallelOps = 0;
+                }
+
+                clearConnection() {
+                    // TODO: stop old connection
+                    this.connection = null;
+                }
+
+                _access_connection() {
+                    if(!this.connection) {
+                        this.connection = this._connector();
+                    }
+                    return this.connection;
+                }
+
+                client() {
+                    return this._access_connection();
+                }
+
+                async db() {
+                    return (await this.client()).db
+                }
+
+                close() {
+                    if(this.connection) {
+                        this.connection.close().catch(function (err) {
+                            node.error("Error while closing client: " + err);
+                        });
+                    }
+                }
+
+            }
+            const poolCell = new PoolCell(() => {
+                return mongodb.MongoClient.connect(config.uri, config.options || {});
+            });
+            mongoPool['#' + config.deploymentId] = poolCell;
         }
         poolCell.instances++;
-        return poolCell.promise;
+        return Promise.resolve(poolCell);
     }
 
     function closeClient(config) {
@@ -239,13 +268,7 @@ module.exports = function (RED) {
         poolCell.instances--;
         if (poolCell.instances === 0) {
             delete mongoPool['#' + config.deploymentId];
-            poolCell.promise.then(function (client) {
-                client.client.close().catch(function (err) {
-                    node.error("Error while closing client: " + err);
-                });
-            }, function () { // ignore error
-                // db-client was not created in the first place.
-            });
+            poolCell.close();
         }
     }
 
@@ -283,206 +306,197 @@ module.exports = function (RED) {
         // by default register the error message input
         node.resetInput();
 
-        const tryConnect = () => {
-            return getClient(node.config).then(function (client) {
-                let nodeCollection;
-                if (node.collection) {
-                    nodeCollection = client.db.collection(node.collection);
-                }
-                let nodeOperation;
-                if (node.operation) {
-                    nodeOperation = operations[node.operation];
-                }
-                node.resetInput();
-                node.on('input', function (msg) {
-                    if (node.config.parallelism && (node.config.parallelism > 0) && (client.parallelOps >= node.config.parallelism)) {
-                        // msg cannot be handled right now - push to queue.
-                        client.queue.push({
-                            "node_id": node.id,
-                            "msg": msg
-                        });
-                        return;
-                    }
-                    client.parallelOps += 1;
-                    setImmediate(function () {
-                        handleMessage(msg);
+        getClient(node.config).then(function (client) {
+            let nodeOperation;
+            if (node.operation) {
+                nodeOperation = operations[node.operation];
+            }
+            node.resetInput();
+            node.on('input', function (msg) {
+                if (node.config.parallelism && (node.config.parallelism > 0) && (client.parallelOps >= node.config.parallelism)) {
+                    // msg cannot be handled right now - push to queue.
+                    client.queue.push({
+                        "node_id": node.id,
+                        "msg": msg
                     });
+                    return;
+                }
+                client.parallelOps += 1;
+                setImmediate(function () {
+                    handleMessage(msg);
                 });
+            });
 
-                node.on('node-red-contrib-mongodb3 handleMessage', function (msg) {
-                    // see: messageHandlingCompleted
-                    setImmediate(function () {
-                        handleMessage(msg);
-                    });
+            node.on('node-red-contrib-mongodb3 handleMessage', function (msg) {
+                // see: messageHandlingCompleted
+                setImmediate(function () {
+                    handleMessage(msg);
                 });
+            });
 
-                function handleMessage(msg) {
-                    let operation = nodeOperation;
-                    if (!operation && msg.operation) {
-                        operation = operations[msg.operation];
+            async function handleMessage(msg) {
+                let operation = nodeOperation;
+                if (!operation && msg.operation) {
+                    operation = operations[msg.operation];
+                }
+                if (!operation) {
+                    sendError(node, msg, "No operation defined");
+                    return messageHandlingCompleted();
+                }
+                let collection; // stays undefined in the case of "db" operation.
+                if (
+                    operation != operations.db &&
+                    operation != operations['db.listCollections.toArray'] &&
+                    operation != operations['db.listCollections.forEach']
+                ) {
+                    let nodeCollection;
+                    if (node.collection) {
+                        nodeCollection = (await client.db()).collection(node.collection);
                     }
-                    if (!operation) {
-                        sendError(node, msg, "No operation defined");
+                    collection = nodeCollection;
+                    if (!collection && msg.collection) {
+                        collection = (await client.db()).collection(msg.collection);
+                    }
+                    if (!collection) {
+                        sendError(node, msg, "No collection defined");
                         return messageHandlingCompleted();
                     }
-                    let collection; // stays undefined in the case of "db" operation.
-                    if (
-                        operation != operations.db &&
-                        operation != operations['db.listCollections.toArray'] &&
-                        operation != operations['db.listCollections.forEach']
-                    ) {
-                        collection = nodeCollection;
-                        if (!collection && msg.collection) {
-                            collection = client.db.collection(msg.collection);
-                        }
-                        if (!collection) {
-                            sendError(node, msg, "No collection defined");
+                }
+
+                delete msg.collection;
+                delete msg.operation;
+                let args = msg.payload;
+                if (!Array.isArray(args)) {
+                    args = [args];
+                }
+                if (args.length === 0) {
+                    // All operations can accept one argument (some can accept more).
+                    // Some operations don't expect a single callback argument.
+                    args.push(undefined);
+                }
+                if ((operation.length > 0) && (args.length > operation.length - 1)) {
+                    // The operation was defined with arguments, thus it may not
+                    // assume that the last argument is the callback.
+                    // We must not pass too many arguments to the operation.
+                    args = args.slice(0, operation.length - 1);
+                }
+                profiling.requests += 1;
+                debounceProfilingStatus();
+                try {
+                    operation.apply(collection || (await client.db()), args.concat(function (err, response) {
+                        if (err && (forEachIteration != err) && (forEachEnd != err)) {
+                            profiling.error += 1;
+                            debounceProfilingStatus();
+                            sendError(node, msg, err);
                             return messageHandlingCompleted();
                         }
-                    }
+                        if (forEachEnd != err) {
+                            if (!!response) {
+                                // Some operations return a Connection object with the result.
+                                // Passing this large connection object might be heavy - it will
+                                // be cloned over and over by Node-RED, and there is no reason
+                                // the typical user will need it.
+                                // The mongodb package does not export the Connection prototype-function.
+                                // Instead of loading the Connection prototype-function from the
+                                // internal libs (which might change their path), I use the fact
+                                // that it inherits EventEmitter.
+                                if (response.connection instanceof EventEmitter) {
+                                    delete response.connection;
+                                }
+                                if (response.result && response.result.connection instanceof EventEmitter) {
+                                    delete response.result.connection;
+                                }
+                            }
+                            
+                            if(!Array.isArray(response)) {
+                                // `response` is an instance of CommandResult, and does not seem to have the standard Object methods, 
+                                // which means that some props are not correctly being forwarded to msg.payload (eg "ops" ouputted from `insertOne`)
+                                // cloning the object fixes that.							
+                                response = Object.assign({}, response);
+                                // response.message includes info about the DB op, but is large and never used (like the connection)
+                                delete response.message;
+                            }
 
-                    delete msg.collection;
-                    delete msg.operation;
-                    let args = msg.payload;
-                    if (!Array.isArray(args)) {
-                        args = [args];
-                    }
-                    if (args.length === 0) {
-                        // All operations can accept one argument (some can accept more).
-                        // Some operations don't expect a single callback argument.
-                        args.push(undefined);
-                    }
-                    if ((operation.length > 0) && (args.length > operation.length - 1)) {
-                        // The operation was defined with arguments, thus it may not
-                        // assume that the last argument is the callback.
-                        // We must not pass too many arguments to the operation.
-                        args = args.slice(0, operation.length - 1);
-                    }
-                    profiling.requests += 1;
+                            // send msg (when err == forEachEnd, this is just a forEach completion).
+                            if (forEachIteration == err) {
+                                // Clone, so we can send the same message again with a different payload
+                                // in each iteration.
+                                const messageToSend = RED.util.cloneMessage(msg);
+                                messageToSend.payload = response;
+                                sendMsg(node, messageToSend);
+                            } else {
+                                // No need to clone - the same message will not be sent again.
+                                msg.payload = response;
+                                sendMsg(node, msg);
+                            }
+                        }
+                        if (forEachIteration != err) {
+                            // clear status
+                            profiling.success += 1;
+                            debounceProfilingStatus();
+                            messageHandlingCompleted();
+                        }
+                    }));
+                } catch (err) {
+                    profiling.error += 1;
                     debounceProfilingStatus();
-                    try {
-                        operation.apply(collection || client.db, args.concat(function (err, response) {
-                            if (err && (forEachIteration != err) && (forEachEnd != err)) {
-                                profiling.error += 1;
-                                debounceProfilingStatus();
-                                sendError(node, msg, err);
-                                return messageHandlingCompleted();
-                            }
-                            if (forEachEnd != err) {
-                                if (!!response) {
-                                    // Some operations return a Connection object with the result.
-                                    // Passing this large connection object might be heavy - it will
-                                    // be cloned over and over by Node-RED, and there is no reason
-                                    // the typical user will need it.
-                                    // The mongodb package does not export the Connection prototype-function.
-                                    // Instead of loading the Connection prototype-function from the
-                                    // internal libs (which might change their path), I use the fact
-                                    // that it inherits EventEmitter.
-                                    if (response.connection instanceof EventEmitter) {
-                                        delete response.connection;
-                                    }
-                                    if (response.result && response.result.connection instanceof EventEmitter) {
-                                        delete response.result.connection;
-                                    }
-                                }
-                                
-                                if(!Array.isArray(response)) {
-                                    // `response` is an instance of CommandResult, and does not seem to have the standard Object methods, 
-                                    // which means that some props are not correctly being forwarded to msg.payload (eg "ops" ouputted from `insertOne`)
-                                    // cloning the object fixes that.							
-                                    response = Object.assign({}, response);
-                                    // response.message includes info about the DB op, but is large and never used (like the connection)
-                                    delete response.message;
-                                }
-
-                                // send msg (when err == forEachEnd, this is just a forEach completion).
-                                if (forEachIteration == err) {
-                                    // Clone, so we can send the same message again with a different payload
-                                    // in each iteration.
-                                    const messageToSend = RED.util.cloneMessage(msg);
-                                    messageToSend.payload = response;
-                                    sendMsg(node, messageToSend);
-                                } else {
-                                    // No need to clone - the same message will not be sent again.
-                                    msg.payload = response;
-                                    sendMsg(node, msg);
-                                }
-                            }
-                            if (forEachIteration != err) {
-                                // clear status
-                                profiling.success += 1;
-                                debounceProfilingStatus();
-                                messageHandlingCompleted();
-                            }
-                        }));
-                    } catch (err) {
-                        profiling.error += 1;
-                        debounceProfilingStatus();
-                        sendError(node, msg, err);
-                        return messageHandlingCompleted();
-                    }
+                    sendError(node, msg, err);
+                    return messageHandlingCompleted();
                 }
-                function messageHandlingCompleted() {
-                    setImmediate(handlePendingMessageOnDemand);
-                }
-                function handlePendingMessageOnDemand() {
-                    while (client.queue.length > 0) {
-                        const pendingMessage = client.queue.shift();
-                        const targetNode = RED.nodes.getNode(pendingMessage.node_id);
-                        if (!targetNode) {
-                            // The node was removed before handling the pending message.
-                            // This is just a warning because a similar scenario can happen if
-                            // a node was removed just before handling a message that was sent
-                            // to it.
-                            const warningMessage = "Node " + pendingMessage.node_id + " was removed while having a pending message";
-                            if (node.config.warn) {
-                                // The warning will appear from the config node, because the target
-                                // node cannot be found.
-                                node.config.warn(warningMessage, pendingMessage.msg);
-                            } else {
-                                // If the node was configured with a service instead of a config node,
-                                // the warning will appear from the current node.
-                                // This shouldn't happen in real life because in such scenario
-                                // the parallelism limit is not configured.
-                                node.warn(warningMessage, pendingMessage.msg);
-                            }
-                            continue;
+            }
+            function messageHandlingCompleted() {
+                setImmediate(handlePendingMessageOnDemand);
+            }
+            function handlePendingMessageOnDemand() {
+                while (client.queue.length > 0) {
+                    const pendingMessage = client.queue.shift();
+                    const targetNode = RED.nodes.getNode(pendingMessage.node_id);
+                    if (!targetNode) {
+                        // The node was removed before handling the pending message.
+                        // This is just a warning because a similar scenario can happen if
+                        // a node was removed just before handling a message that was sent
+                        // to it.
+                        const warningMessage = "Node " + pendingMessage.node_id + " was removed while having a pending message";
+                        if (node.config.warn) {
+                            // The warning will appear from the config node, because the target
+                            // node cannot be found.
+                            node.config.warn(warningMessage, pendingMessage.msg);
+                        } else {
+                            // If the node was configured with a service instead of a config node,
+                            // the warning will appear from the current node.
+                            // This shouldn't happen in real life because in such scenario
+                            // the parallelism limit is not configured.
+                            node.warn(warningMessage, pendingMessage.msg);
                         }
-                        // Handle the pending message.
-                        if (!targetNode.emit('node-red-contrib-mongodb3 handleMessage', pendingMessage.msg)) {
-                            // Safety check - if emit() returned false it means there are no listeners to the event.
-                            // Was the target node closed?
-                            // This shouldn't happen normally, but if it does, we must try to handle the next message in the queue.
-                            const errorMessage = "Node " + pendingMessage.node_id + " could not handle the pending message";
-                            if (node.config.error) {
-                                node.config.error(errorMessage, pendingMessage.msg);
-                            } else {
-                                sendError(node, pendingMessage.msg, errorMessage)
-                            }
-                            continue;
+                        continue;
+                    }
+                    // Handle the pending message.
+                    if (!targetNode.emit('node-red-contrib-mongodb3 handleMessage', pendingMessage.msg)) {
+                        // Safety check - if emit() returned false it means there are no listeners to the event.
+                        // Was the target node closed?
+                        // This shouldn't happen normally, but if it does, we must try to handle the next message in the queue.
+                        const errorMessage = "Node " + pendingMessage.node_id + " could not handle the pending message";
+                        if (node.config.error) {
+                            node.config.error(errorMessage, pendingMessage.msg);
+                        } else {
+                            sendError(node, pendingMessage.msg, errorMessage)
                         }
-                        // Another message is being handled. The number of parallel ops does not change.
-                        return;
+                        continue;
                     }
-                    // The queue is empty. The number of parallel ops has reduced.
-                    if (client.parallelOps <= 0) {
-                        sendError(node, undefined, "Something went wrong with node-red-contrib-mongodb3 parallel-ops count");
-                        return
-                    }
-                    client.parallelOps -= 1;
+                    // Another message is being handled. The number of parallel ops does not change.
+                    return;
                 }
-            }).catch((err) => {
-                registerErrorMessage();
-                // Failed to create db client
-                sendError(node, undefined, err);
-                setTimeout(() => {
-                    if(!node._closed) {
-                        tryConnect();
-                    }
-                }, 10000);
-            });
-        };
-        tryConnect();
+                // The queue is empty. The number of parallel ops has reduced.
+                if (client.parallelOps <= 0) {
+                    sendError(node, undefined, "Something went wrong with node-red-contrib-mongodb3 parallel-ops count");
+                    return
+                }
+                client.parallelOps -= 1;
+            }
+        }).catch((err) => {
+            // Failed to create db client
+            sendError(node, undefined, err);
+        });
 
         const profiling = {
             "requests": 0,
