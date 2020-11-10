@@ -219,12 +219,14 @@ module.exports = function (RED) {
         }
         if (!poolCell) {
             class PoolCell {
-                constructor(connector) {
+                constructor(connector, uri) {
                     this.instances = 0;
                     this._connector = connector;
                     this.connection = null;
                     this.queue = [];
                     this.parallelOps = 0;
+                    this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
+                    
                 }
 
                 clearConnection() {
@@ -243,8 +245,10 @@ module.exports = function (RED) {
                     return this._access_connection();
                 }
 
-                async db() {
-                    return (await this.client()).db
+                db() {
+                    return this.client().then((client) => {
+                        return client.db(dbName);
+                    })
                 }
 
                 closeInternalConnections() {
@@ -258,8 +262,8 @@ module.exports = function (RED) {
                     return Promise.resolve();
                 }
 
-            }
-            const poolCell = new PoolCell(() => {
+            };
+            poolCell = new PoolCell(() => {
                 return mongodb.MongoClient.connect(config.uri, config.options || {});
             });
             mongoPool['#' + config.deploymentId] = poolCell;
