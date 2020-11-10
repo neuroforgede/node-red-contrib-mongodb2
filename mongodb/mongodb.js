@@ -43,6 +43,11 @@ module.exports = function (RED) {
         const err = error || 'unknown error';
         if(error && error instanceof mongodb.MongoNetworkError) {
             // mark client as dead
+            getClient().then((client) => {
+                client.closeInternalConnections()
+            }).catch(() => {
+                // ignore
+            })
             node.resetInput();
             node.warn('client connection dead, need to restart')
         }
@@ -242,12 +247,15 @@ module.exports = function (RED) {
                     return (await this.client()).db
                 }
 
-                close() {
+                closeInternalConnections() {
                     if(this.connection) {
-                        this.connection.close().catch(function (err) {
+                        const conn = this.connection;
+                        this.connection = null;
+                        return conn.close().catch(function (err) {
                             node.error("Error while closing client: " + err);
                         });
                     }
+                    return Promise.resolve();
                 }
 
             }
@@ -268,7 +276,7 @@ module.exports = function (RED) {
         poolCell.instances--;
         if (poolCell.instances === 0) {
             delete mongoPool['#' + config.deploymentId];
-            poolCell.close();
+            poolCell.closeInternalConnections();
         }
     }
 
