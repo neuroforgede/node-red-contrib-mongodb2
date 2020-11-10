@@ -249,7 +249,7 @@ module.exports = function (RED) {
                         const conn = this.client();
                         const handleConnError = (error) => {
                             if(error) {
-                                if(error && error instanceof mongodb.MongoNetworkError) {
+                                if(error && (error instanceof mongodb.MongoNetworkError || error instanceof mongodb.MongoTimeoutError)) {
                                     this.clearConnection(conn);
                                     this.closeConn(conn);
                                 }
