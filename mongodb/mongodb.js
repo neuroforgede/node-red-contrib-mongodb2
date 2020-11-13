@@ -168,6 +168,12 @@ module.exports = function (RED) {
         } else {
             this.options = {};
         }
+        // enforce unified topology if not explicitly disabled
+        if(!this.options.useUnifiedTopology === false) {
+            this.options.useUnifiedTopology = true;
+        } else {
+            this.warn('using useUnifiedTopology = false is heavily discouraged as it will result in broken connection pools if connection to database is lost');
+        }
         if (process.env.OVERRIDE_MONGO_OPTIONS && process.env.OVERRIDE_MONGO_OPTIONS.length > 0) {
             try {
                 this.options = JSON.parse(process.env.OVERRIDE_MONGO_OPTIONS);
@@ -209,13 +215,14 @@ module.exports = function (RED) {
         }
         if (!poolCell) {
             class PoolCell {
-                constructor(connector, uri) {
+                constructor(connector, uri, useUnifiedTopology) {
                     this.instances = 0;
                     this._connector = connector;
                     this.connection = null;
                     this.queue = [];
                     this.parallelOps = 0;
                     this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
+                    this.useUnifiedTopology = useUnifiedTopology;
                 }
 
                 clearConnection(connection) {
@@ -247,14 +254,15 @@ module.exports = function (RED) {
                     return Promise.resolve().then(async () => {
                         // keep track of which client we are using, and close it later if there are any errors
                         const conn = this.client();
-                        const handleConnError = (error) => {
-                            if(error) {
+                        const handleIfConnError = (error) => {
+                            if(error && !this.useUnifiedTopology) {
                                 if(error && (error instanceof mongodb.MongoNetworkError || error instanceof mongodb.MongoTimeoutError)) {
                                     console.error('mongodbjs: mongodb connection error, restarting connection', error)
                                     this.clearConnection(conn);
-                                    this.closeConn(conn);
+                                    return this.closeConn(conn);
                                 }
                             }
+                            return Promise.resolve();
                         };
                         try {
                             let applyOn = await this.db(conn);
@@ -263,11 +271,16 @@ module.exports = function (RED) {
                             }
                             operation.apply(applyOn, args.concat((err, response) => {
                                 // don't throw, normal code has to handle it still
-                                handleConnError(err);
-                                callback(err, response);
+                                handleIfConnError(err).then(() => {
+                                    try {
+                                        callback(err, response);
+                                    } catch(error) {
+                                        handleIfConnError(error);
+                                    }
+                                });
                             }));
                         } catch(err) {
-                            handleConnError(err);
+                            await handleIfConnError(err);
                             throw err;
                         }
                     });
@@ -278,11 +291,11 @@ module.exports = function (RED) {
                         return conn.then((connObj) => {
                             if(connObj) {
                                 return connObj.close().catch(function (err) {
-                                    node.error("Error while closing client: " + err);
+                                    console.error("Error while closing client: ", err);
                                 });
                             }
                         }).catch(function (err) {
-                            node.error("Error while closing client: " + err);
+                            console.error("Error while closing client: " , err);
                         });
                     }
                 }
@@ -298,9 +311,10 @@ module.exports = function (RED) {
                 }
 
             };
+            const configOptions = config.options || {};
             poolCell = new PoolCell(() => {
-                return mongodb.MongoClient.connect(config.uri, config.options || {});
-            }, config.uri);
+                return mongodb.MongoClient.connect(config.uri, configOptions);
+            }, config.uri, configOptions.useUnifiedTopology || true);
             mongoPool['#' + config.deploymentId] = poolCell;
         }
         poolCell.instances++;
