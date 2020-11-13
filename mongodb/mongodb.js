@@ -307,15 +307,15 @@ module.exports = function (RED) {
         return Promise.resolve(poolCell);
     }
 
-    function closeClient(config) {
-        const poolCell = mongoPool['#' + config.deploymentId];
-        if (!poolCell) {
-            return;
-        }
-        poolCell.instances--;
-        if (poolCell.instances === 0) {
-            delete mongoPool['#' + config.deploymentId];
-            poolCell.closeInternalConnections();
+    function closeClient(config, client) {
+        client.instances--;
+        if (client.instances <= 0) {
+            client.closeInternalConnections().finally(() => {
+                if(mongoPool['#' + config.deploymentId] == client) {
+                    // only really delete if the client in the pool is really ours
+                    delete mongoPool['#' + config.deploymentId];
+                }
+            });
         }
     }
 
