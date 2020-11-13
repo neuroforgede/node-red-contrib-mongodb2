@@ -215,89 +215,41 @@ module.exports = function (RED) {
         }
         if (!poolCell) {
             class PoolCell {
-                constructor(connector, uri, useUnifiedTopology) {
+                constructor(connector, uri) {
                     this.instances = 0;
                     this._connector = connector;
                     this.connection = null;
                     this.queue = [];
                     this.parallelOps = 0;
                     this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
-                    this.useUnifiedTopology = useUnifiedTopology;
                 }
 
-                clearConnection(connection) {
-                    if(this.connection == connection) {
-                        // only cleanup if the passed in object is the same we currently use
-                        // to prevent old connections killing new ones immediately
-                        this.connection = null;
-                    }
-                }
-
-                _access_connection() {
+                async _access_connection() {
                     if(!this.connection) {
-                        this.connection = this._connector();
+                        this.connection = await this._connector();
                     }
                     return this.connection;
                 }
-
-                client() {
-                    return this._access_connection();
-                }
-
-                db(client) {
-                    return client.then((cl) => {
-                        return cl.db(this.dbName);
-                    })
-                }
                 
-                runOp(coll, operation, args, callback) {
-                    return Promise.resolve().then(async () => {
-                        // keep track of which client we are using, and close it later if there are any errors
-                        const conn = this.client();
-                        const handleIfConnError = (error) => {
-                            if(error /*&& this.useUnifiedTopology*/) {
-                                if(error && (error instanceof mongodb.MongoNetworkError || error instanceof mongodb.MongoTimeoutError)) {
-                                    console.error('mongodbjs: mongodb connection error, restarting connection', error)
-                                    this.clearConnection(conn);
-                                    return this.closeConn(conn);
-                                }
-                            }
-                            return Promise.resolve();
-                        };
-                        try {
-                            let applyOn = await this.db(conn);
-                            if(coll) {
-                                applyOn = applyOn.collection(coll);
-                            }
-                            operation.apply(applyOn, args.concat((err, response) => {
-                                // don't throw, normal code has to handle it still
-                                handleIfConnError(err).then(() => {
-                                    try {
-                                        callback(err, response);
-                                    } catch(error) {
-                                        handleIfConnError(error);
-                                    }
-                                });
-                            }));
-                        } catch(err) {
-                            await handleIfConnError(err);
-                            throw err;
+                async runOp(coll, operation, args, callback) {
+                    try {
+                        const conn = await this._access_connection();
+                        let applyOn = await conn.db(this.dbName);
+                        if(coll) {
+                            applyOn = applyOn.collection(coll);
                         }
-                    });
+                        operation.apply(applyOn, args.concat((err, response) => {
+                            callback(err, response);
+                        }));
+                    } catch(err) {
+                        throw err;
+                    }
                 }
 
                 closeConn(conn) {
-                    if(conn) {
-                        return conn.then((connObj) => {
-                            if(connObj) {
-                                return connObj.close().catch(function (err) {
-                                    console.error("Error while closing client: ", err);
-                                });
-                            }
-                        }).catch(function (err) {
-                            console.error("Error while closing client: " , err);
-                        });
-                    }
+                    return conn.close().catch((err) => {
+                        console.error("Error while closing client: ", err);
+                    });
                 }
 
                 closeInternalConnections() {
@@ -314,7 +266,7 @@ module.exports = function (RED) {
             const configOptions = config.options || {};
             poolCell = new PoolCell(() => {
                 return mongodb.MongoClient.connect(config.uri, configOptions);
-            }, config.uri, configOptions.useUnifiedTopology || true);
+            }, config.uri);
             mongoPool['#' + config.deploymentId] = poolCell;
         }
         poolCell.instances++;
