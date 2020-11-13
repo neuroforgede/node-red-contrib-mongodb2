@@ -169,7 +169,7 @@ module.exports = function (RED) {
             this.options = {};
         }
         // enforce unified topology if not explicitly disabled
-        if(this.options.useUnifiedTopology === false) {
+        if(this.options.useUnifiedTopology !== false) {
             this.options.useUnifiedTopology = true;
         } else {
             this.warn('using useUnifiedTopology = false is heavily discouraged as it will result in broken connection pools if connection to database is lost');
