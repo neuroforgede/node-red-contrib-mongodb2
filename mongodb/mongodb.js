@@ -172,7 +172,7 @@ module.exports = function (RED) {
         if(this.options.useUnifiedTopology !== false) {
             this.options.useUnifiedTopology = true;
         } else {
-            this.warn('using useUnifiedTopology = false is heavily discouraged as it will result in broken connection pools if connection to database is lost');
+            this.warn('using useUnifiedTopology = false is discouraged');
         }
         if (process.env.OVERRIDE_MONGO_OPTIONS && process.env.OVERRIDE_MONGO_OPTIONS.length > 0) {
             try {
@@ -255,7 +255,7 @@ module.exports = function (RED) {
                         // keep track of which client we are using, and close it later if there are any errors
                         const conn = this.client();
                         const handleIfConnError = (error) => {
-                            if(error && !this.useUnifiedTopology) {
+                            if(error /*&& this.useUnifiedTopology*/) {
                                 if(error && (error instanceof mongodb.MongoNetworkError || error instanceof mongodb.MongoTimeoutError)) {
                                     console.error('mongodbjs: mongodb connection error, restarting connection', error)
                                     this.clearConnection(conn);
