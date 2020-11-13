@@ -215,18 +215,19 @@ module.exports = function (RED) {
         }
         if (!poolCell) {
             class PoolCell {
-                constructor(connector, uri) {
+                constructor(uri, options) {
                     this.instances = 0;
-                    this._connector = connector;
                     this.connection = null;
                     this.queue = [];
                     this.parallelOps = 0;
                     this.dbName = decodeURIComponent((uri.match(/^.*\/([^?]*)\??.*$/) || [])[1] || '');
+                    this.options = options;
                 }
 
                 async _access_connection() {
                     if(!this.connection) {
-                        this.connection = await this._connector();
+                        // await connection and only keep it if initial connection did not fail
+                        this.connection = await mongodb.MongoClient.connect(config.uri, configOptions);
                     }
                     return this.connection;
                 }
@@ -246,27 +247,25 @@ module.exports = function (RED) {
                     }
                 }
 
-                closeConn(conn) {
-                    return conn.close().catch((err) => {
+                async closeConn(conn) {
+                    try{
+                        await conn.close();
+                    } catch(err) {
                         console.error("Error while closing client: ", err);
-                    });
+                    }
                 }
 
-                closeInternalConnections() {
-                    // TODO: implement mechanism that doesnt kill itself during restart
+                async closeInternalConnections() {
                     if(this.connection) {
                         const conn = this.connection;
                         this.connection = null;
-                        return this.closeConn(conn);
+                        await this.closeConn(conn);
                     }
-                    return Promise.resolve();
                 }
 
             };
             const configOptions = config.options || {};
-            poolCell = new PoolCell(() => {
-                return mongodb.MongoClient.connect(config.uri, configOptions);
-            }, config.uri);
+            poolCell = new PoolCell(config.uri, configOptions);
             mongoPool['#' + config.deploymentId] = poolCell;
         }
         poolCell.instances++;
