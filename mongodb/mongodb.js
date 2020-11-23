@@ -528,7 +528,7 @@ module.exports = function (RED) {
         node.on('close', function () {
             node._closed = true;
             if (node.config) {
-                closeClient(node.config);
+                closeClient(node.config, node.client);
             }
             node.removeAllListeners('node-red-contrib-mongodb3 handleMessage');
             if (debouncer) {
